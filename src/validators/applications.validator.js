@@ -1,7 +1,8 @@
 const AppError = require('../utils/AppError');
-const { SOURCES } = require('../utils/constants');
+const { SOURCES, APPLICATION_STATUS } = require('../utils/constants');
 
 const ALLOWED_SOURCES = Object.freeze(Object.values(SOURCES));
+const ALLOWED_STATUSES = Object.freeze(Object.values(APPLICATION_STATUS));
 
 /**
  * Longitud maxima de cover_letter. La columna es TEXT (65.535 bytes) y utf8mb4
@@ -10,12 +11,28 @@ const ALLOWED_SOURCES = Object.freeze(Object.values(SOURCES));
  */
 const COVER_LETTER_MAX_LENGTH = 10000;
 
+/** Entero positivo escrito en decimal, sin signo, ceros a la izquierda ni decimales. */
+const POSITIVE_INTEGER_STRING = /^[1-9][0-9]*$/;
+
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function isPositiveInteger(value) {
   return Number.isSafeInteger(value) && value > 0;
+}
+
+/** Convierte un texto de URL (param o query) a entero positivo, o devuelve null. */
+function parsePositiveIntegerString(value) {
+  if (typeof value !== 'string' || !POSITIVE_INTEGER_STRING.test(value)) return null;
+  const number = Number(value);
+  return Number.isSafeInteger(number) ? number : null;
+}
+
+function throwIfDetails(details, message) {
+  if (details.length > 0) {
+    throw new AppError(message, 400, details);
+  }
 }
 
 /**
@@ -64,9 +81,7 @@ function validateCreateApplication(body) {
     }
   }
 
-  if (details.length > 0) {
-    throw new AppError('Datos de la postulacion invalidos', 400, details);
-  }
+  throwIfDetails(details, 'Datos de la postulacion invalidos');
 
   return {
     candidateId,
@@ -76,4 +91,76 @@ function validateCreateApplication(body) {
   };
 }
 
-module.exports = { validateCreateApplication, COVER_LETTER_MAX_LENGTH };
+/**
+ * Valida los filtros de GET /applications (?status= y ?vacancyId=).
+ * Ambos son opcionales; si vienen, deben ser validos. Otros parametros se ignoran.
+ * Un parametro repetido (?status=A&status=B) llega como array y se rechaza.
+ */
+function validateListFilters(query = {}) {
+  const details = [];
+  const filters = {};
+
+  if (query.status !== undefined) {
+    if (typeof query.status !== 'string' || !ALLOWED_STATUSES.includes(query.status)) {
+      details.push({
+        field: 'status',
+        message: `Valor no permitido. Valores validos: ${ALLOWED_STATUSES.join(', ')}`,
+      });
+    } else {
+      filters.status = query.status;
+    }
+  }
+
+  if (query.vacancyId !== undefined) {
+    const vacancyId = parsePositiveIntegerString(query.vacancyId);
+    if (vacancyId === null) {
+      details.push({ field: 'vacancyId', message: 'Debe ser un entero positivo' });
+    } else {
+      filters.vacancyId = vacancyId;
+    }
+  }
+
+  throwIfDetails(details, 'Filtros invalidos');
+  return filters;
+}
+
+/** Valida el :id de la URL y lo devuelve como numero. */
+function validateApplicationId(rawId) {
+  const id = parsePositiveIntegerString(rawId);
+  if (id === null) {
+    throw new AppError('Id de postulacion invalido', 400, [
+      { field: 'id', message: 'Debe ser un entero positivo' },
+    ]);
+  }
+  return id;
+}
+
+/** Valida el body de PUT /applications/:id/status. */
+function validateStatusUpdate(body) {
+  if (!isPlainObject(body)) {
+    throw new AppError('El cuerpo debe ser un objeto JSON', 400);
+  }
+
+  const { status } = body;
+  const details = [];
+
+  if (status === undefined || status === null) {
+    details.push({ field: 'status', message: 'Es obligatorio' });
+  } else if (typeof status !== 'string' || !ALLOWED_STATUSES.includes(status)) {
+    details.push({
+      field: 'status',
+      message: `Valor no permitido. Valores validos: ${ALLOWED_STATUSES.join(', ')}`,
+    });
+  }
+
+  throwIfDetails(details, 'Estado invalido');
+  return { status };
+}
+
+module.exports = {
+  validateCreateApplication,
+  validateListFilters,
+  validateApplicationId,
+  validateStatusUpdate,
+  COVER_LETTER_MAX_LENGTH,
+};

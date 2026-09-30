@@ -1,6 +1,7 @@
 const AppError = require('../utils/AppError');
 const {
   APPLICATION_STATUS,
+  FINAL_STATUSES,
   VACANCY_STATUS,
   REAPPLY_WAIT_DAYS,
 } = require('../utils/constants');
@@ -116,4 +117,48 @@ async function createApplication(input, { now = () => new Date() } = {}) {
   });
 }
 
-module.exports = { createApplication, assertCanApply };
+/**
+ * Lista postulaciones con datos de candidato y vacante.
+ * @param {{status?: string, vacancyId?: number}} filters - Ya validados
+ */
+async function listApplications(filters) {
+  return applicationsRepository.findAllWithDetails(filters);
+}
+
+/**
+ * Cambia el estado de una postulacion. Espera id y status ya validados.
+ * - 404 si no existe.
+ * - 409 si esta en un estado final (REJECTED, HIRED).
+ * - Si el estado pedido es el actual, no modifica nada (PUT idempotente)
+ *   y status_updated_at conserva su valor.
+ */
+async function updateApplicationStatus(id, status) {
+  return withTransaction(async (connection) => {
+    const application = await applicationsRepository.findByIdForUpdate(connection, id);
+    if (!application) {
+      throw new AppError(`Postulacion ${id} no encontrada`, 404);
+    }
+
+    if (FINAL_STATUSES.includes(application.status)) {
+      throw new AppError(
+        `La postulacion ${id} esta en estado final ${application.status} y no puede cambiar`,
+        409,
+        { currentStatus: application.status },
+      );
+    }
+
+    if (application.status === status) {
+      return application;
+    }
+
+    await applicationsRepository.updateStatus(connection, id, status);
+    return applicationsRepository.findById(connection, id);
+  });
+}
+
+module.exports = {
+  createApplication,
+  listApplications,
+  updateApplicationStatus,
+  assertCanApply,
+};
